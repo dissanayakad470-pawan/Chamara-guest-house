@@ -17,6 +17,9 @@ jobs:
           cp -a project/. .
           rm -rf project
 
+      - name: Create env example
+        run: touch .env.example
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
