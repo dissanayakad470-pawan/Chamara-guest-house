@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - "*.zip"
+      - ".github/workflows/build-apk-from-zip.yml"
 
 jobs:
   build:
@@ -41,8 +42,6 @@ jobs:
           unzip -q "$ZIP_FILE" -d project
 
           echo "ZIP extracted successfully."
-          echo "Files:"
-          find project -maxdepth 3 -type f | head -100
 
       - name: Find Android project
         shell: bash
@@ -55,16 +54,13 @@ jobs:
             | head -n 1)
 
           if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: settings.gradle.kts or settings.gradle was not found."
-            echo "The ZIP may not contain a complete Android project."
+            echo "ERROR: Android project not found in ZIP."
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS_FILE")
 
-          echo "Android project:"
-          echo "$PROJECT_DIR"
-
+          echo "Android project: $PROJECT_DIR"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
       - name: Set up JDK 17
@@ -83,20 +79,48 @@ jobs:
 
           sdkmanager "platform-tools"
           sdkmanager "platforms;android-36"
+
           yes | sdkmanager --licenses || true
 
-      - name: Set up Gradle
+      - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
 
-      - name: Check Gradle files
+      - name: Prepare project for GitHub build
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          echo "Project directory:"
-          echo "$PROJECT_DIR"
+          set -e
 
-          echo ""
-          echo "Project files:"
-          find "$PROJECT_DIR" -maxdepth 2 -type f | sort
+          echo "Preparing Android project..."
+
+          # Create a debug keystore if the project expects one
+          if [ ! -f "./debug.keystore" ]; then
+            echo "Creating debug.keystore..."
+
+            keytool -genkeypair \
+              -v \
+              -keystore ./debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          echo "Debug keystore ready."
+
+          # Use normal Android API 36 instead of an unavailable extension package
+          if [ -f "./app/build.gradle.kts" ]; then
+            sed -i \
+              's/compileSdk { version = release(36) { minorApiLevel = 1 } }/compileSdk = 36/' \
+              ./app/build.gradle.kts
+          fi
+
+          echo "Project preparation complete."
 
       - name: Build Debug APK
         working-directory: ${{ env.PROJECT_DIR }}
@@ -105,12 +129,9 @@ jobs:
           set -e
 
           if [ -f "./gradlew" ]; then
-            echo "Gradle wrapper found."
             chmod +x ./gradlew
             ./gradlew assembleDebug --stacktrace
           else
-            echo "Gradle wrapper not found."
-            echo "Using installed Gradle."
             gradle assembleDebug --stacktrace
           fi
 
@@ -119,7 +140,7 @@ jobs:
         run: |
           set -e
 
-          echo "Searching for APK..."
+          echo "APK files found:"
 
           find "$PROJECT_DIR" \
             -type f \
@@ -131,5 +152,5 @@ jobs:
         with:
           name: Chamara-Resort-Debug-APK
           path: |
-            ${{ env.PROJECT_DIR }}/app/build/outputs/apk/**/*.apk
+            ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
